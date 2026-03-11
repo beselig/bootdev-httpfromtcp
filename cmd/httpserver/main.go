@@ -1,13 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/request"
 	"httpfromtcp/internal/response"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -30,6 +34,48 @@ func main() {
 func handler(w *response.Writer, request request.Request) {
 	var body []byte
 
+	if strings.HasPrefix(request.RequestLine.RequestTarget, "/httpbin") {
+		parts := strings.Split(request.RequestLine.RequestTarget, "/")
+		num := parts[len(parts)-1]
+
+		w.WriteStatusLine(200)
+		h := headers.NewHeaders()
+		h.Set("Content-Type", "application/json")
+		h.Set("Transfer-Encoding", "chunked")
+		h.Set("Host", "httpbin.org")
+
+		w.WriteHeaders(h)
+
+		resp, err := http.Get("https://httpbin.org/stream/" + num)
+
+		if err != nil {
+			fmt.Println(err)
+			handleError(w, 500)
+			return
+		}
+
+		b := make([]byte, 1024)
+		done := false
+		for !done {
+			n, err := resp.Body.Read(b)
+			fmt.Println(n, err)
+			if err != nil {
+				if err == io.EOF {
+					w.WriteChunkedBodyDone()
+					done = true
+					break
+				}
+				handleError(w, 500)
+				done = true
+			}
+
+			w.WriteChunkedBody(b[:n])
+
+		}
+
+		return
+	}
+
 	switch request.RequestLine.RequestTarget {
 	case "/":
 		body = []byte(`<html>
@@ -44,29 +90,9 @@ func handler(w *response.Writer, request request.Request) {
 		w.WriteStatusLine(200)
 
 	case "/yourproblem":
-		body = []byte(`<html>
-  <head>
-    <title>400 Bad Request</title>
-  </head>
-  <body>
-    <h1>Bad Request</h1>
-    <p>Your request honestly kinda sucked.</p>
-  </body>
-</html>`)
-		w.WriteStatusLine(400)
-
-		w.WriteBody([]byte(body))
+		handleError(w, 500)
 	case "/myproblem":
-		body = []byte(`<html>
-  <head>
-    <title>500 Internal Server Error</title>
-  </head>
-  <body>
-    <h1>Internal Server Error</h1>
-    <p>Okay, you know what? This one is on me.</p>
-  </body>
-</html>`)
-		w.WriteStatusLine(500)
+		handleError(w, 400)
 	}
 
 	h := headers.NewHeaders()
@@ -76,4 +102,33 @@ func handler(w *response.Writer, request request.Request) {
 	w.WriteHeaders(h)
 
 	w.WriteBody([]byte(body))
+}
+
+func handleError(w *response.Writer, statusCode response.StatusCode) {
+	w.WriteStatusLine(statusCode)
+	switch statusCode {
+	case 400:
+		w.WriteStatusLine(400)
+		w.WriteBody([]byte(`<html>
+  <head>
+    <title>400 Bad Request</title>
+  </head>
+  <body>
+    <h1>Bad Request</h1>
+    <p>Your request honestly kinda sucked.</p>
+  </body>
+</html>`))
+
+	case 500:
+		w.WriteStatusLine(500)
+		w.WriteBody([]byte(`<html>
+  <head>
+    <title>500 Internal Server Error</title>
+  </head>
+  <body>
+    <h1>Internal Server Error</h1>
+    <p>Okay, you know what? This one is on me.</p>
+  </body>
+</html>`))
+	}
 }
